@@ -1,0 +1,658 @@
+---
+title: "ASS_3_clean"
+author: "Annamaya Halskov-Jensen"
+date: "18/5/2019"
+output: html_document
+---
+
+```{r setup, include=FALSE} 
+setwd("/Users/annamayahalskov-jensen/Documents/Cognitive Science/4th semester/Computational modeling for cognitive science/Multivariate linear models")
+ 
+library(pacman)
+p_load("coda", "mvtnorm", "devtools", "rstan", "rethinking", "dplyr", "dfcrm", "brms", "ggplot2")
+# library(devtools)
+# devtools::install_github("paul-buerkner/brms")
+# pacman::p_load(brms)
+#update.packages("brms", dependencies = T)
+#data
+data <- read.csv("Assignment3Data.csv")
+```
+
+## Multivariate linear models
+
+In this assignment you will investigate the relation between different aspects of IQ and symptom severity in ASD (as measured by ADOS). The assignment is meant to make you practice on linear models, multiple predictors and interactions.
+
+The data you will use is the outcome of the psychological testing of the children you analyzed in methods 3.
+Data: https://www.dropbox.com/s/hom2qnmp9hyfwmu/Assignment3Data.csv?dl=0
+The data consists of ChildID, gender, age, diagnosis (ASD), symptom severity (ADOS), several aspects of IQ (NonVerbal/Perceptual,Verbal,Social) and the visit at which the tests were administered. The questions should be answered by focusing on visit 1.
+
+The questions you will have to answer are:
+
+### 1. Assess the relation between symptom severity and IQ (focus on visit 1 and children with ASD) and report the model, a plot of the model, a couple of lines describing the quality of the model and interpreting the results.
+P.S. Should you scale? 
+P.P.S. Don't forget to motivate your priors. 
+P.P.P.S. At least one plot for results and a plot for quality of each model (here and in the next questions) would be appreciated.
+
+```{r filtering data}
+# only visit 1 
+visit1 <- data %>% filter(Visit == 1)
+#visit1 <- na.omit(visit1)
+# only visit 1  + only asd
+v1_asd <- filter(data, data$Visit == 1 & data$ASD == 1)
+```
+
+```{r standardising variables}
+v1_asd$ADOS = (v1_asd$ADOS-mean(v1_asd$ADOS, na.rm = T)) / sd(v1_asd$ADOS)
+v1_asd$VerbalIQ = (v1_asd$VerbalIQ-mean(v1_asd$VerbalIQ, na.rm = T)) / sd(v1_asd$VerbalIQ)
+v1_asd$NonVerbalIQ = (v1_asd$NonVerbalIQ-mean(v1_asd$NonVerbalIQ, na.rm = T)) / sd(v1_asd$NonVerbalIQ)
+v1_asd$SocialIQ = (v1_asd$SocialIQ-mean(v1_asd$SocialIQ, na.rm = T)) / sd(v1_asd$SocialIQ)
+```
+
+
+DAG???
+```{r}
+install.packages("dagitty")
+library(dagitty)
+install.packages("V8")
+library("V8")
+g <- dagitty('dag {
+    ASD_true [pos="0,2.5"]
+    Q1 [pos="1,2"]
+    Qn [pos="1,3"]
+    VIQ [pos="2,4"]
+    NVIQ [pos="2,3"]
+    SIQ [pos="2,2"]
+    ADOS [pos="2,1"]
+    ASD_diagnosis [pos="3,2.5"]
+    ASD_true -> Q1 -> VIQ -> ASD_diagnosis
+    ASD_true -> Q1 -> NVIQ -> ASD_diagnosis
+    ASD_true -> Q1 -> SIQ -> ASD_diagnosis
+    ASD_true -> Q1 -> ADOS -> ASD_diagnosis
+    ASD_true -> Qn -> VIQ -> ASD_diagnosis
+    ASD_true -> Qn -> NVIQ -> ASD_diagnosis
+    ASD_true -> Qn -> SIQ -> ASD_diagnosis
+    ASD_true -> Qn -> ADOS -> ASD_diagnosis
+}')
+plot(g)
+```
+
+
+1.1. Verbal IQ and ADOS
+```{r vIQ + ados} 
+plot(v1_asd$ADOS ~ v1_asd$VerbalIQ)   
+ 
+#  defining model first
+m0 <-  bf(ADOS ~ 1 + VerbalIQ)
+dens (v1_asd$VerbalIQ)
+dens (v1_asd$ADOS)
+ 
+#Getting the priors
+get_prior(m0, v1_asd, family = gaussian)
+#Defining priors used
+prior = c(prior(normal(0,0.5), class = 'Intercept'), prior(normal(0,1), class = 'b'), prior(normal(0,0.8), class = 'sigma'))
+#modelling
+m0_prior <-  brm(m0, family = gaussian, v1_asd, prior = prior, sample_prior = "only")
+#Checking priors
+pp_check(m0_prior, nsample = 100)
+### MAP MAP MAP
+#MAP
+flist <-  alist(
+    ADOS ~ dnorm(mu , sigma),
+    mu <- a + b*VerbalIQ ,
+        a ~ dnorm( 0 , 0.5 ) ,
+        b ~ dnorm( 0 , 0.5 ) ,
+        sigma ~ dunif( 0 , 1 )
+  )
+m.m0 <- rethinking::map(flist, data = v1_asd)
+precis(m.m0) 
+precis_plot(precis(m.m0))
+```
+
+```{r plots} 
+### Plot of raw data 
+ggplot(v1_asd, aes(VerbalIQ, ADOS)) +
+  geom_point()
+### Another one
+# extract 20 samples from the posterior
+post <- extract.samples( m.m0 , n=100 )
+# display raw data and sample size
+plot( ADOS ~ VerbalIQ , data=v1_asd )
+abline( a=coef(m.m0)["a"] , b=coef(m.m0)["b"], col=col.alpha("red", 1))
+for (i in 1:150)
+abline( a=post$a[i], b=post$b[i], col=col.alpha("blue",0.1))
+### New plot
+#Look at the distribution of mu
+verb.seq <- seq(from= -2, to= 2.5, by=0.1)
+#Link-function to compute mu for each sample from posterior and for each value in the sequence
+mu <- link( m.m0 , data=data.frame(VerbalIQ=verb.seq) )
+str(mu)
+# use type="n" to hide raw data
+plot( ADOS~ VerbalIQ , v1_asd , type="n" )
+# loop over samples and plot each mu value
+for ( i in 1:nrow(mu) )
+points( verb.seq , mu[i,] , pch=16 , col=col.alpha(rangi2,0.1) )
+### GOODPPLOT NICEPLOT
+# summarize the distribution of mu
+mu.mean <- apply(mu , 2 , mean ) 
+mu.HPDI <- apply(mu , 2 , HPDI , prob=0.89 )
+# plot raw data
+# fading out points to make line and interval more visible
+plot( ADOS ~ VerbalIQ , data=v1_asd , col=col.alpha(rangi2,1) )
+# plot the MAP line, aka the mean mu for each weight
+lines( verb.seq , mu.mean )
+# plot a shaded region for 89% HPDI
+shade( mu.HPDI , verb.seq )
+```
+
+
+1.2. Non Verbal IQ and ADOS
+```{r nIQ + ados}  
+plot(v1_asd$ADOS ~ v1_asd$NonVerbalIQ) 
+ 
+#  defining model first
+m2 <-  bf(ADOS ~ 1 + NonVerbalIQ)
+dens (v1_asd$NonVerbalIQ) 
+dens (v1_asd$ADOS)
+#Getting the priors
+get_prior(m2, v1_asd, family = gaussian)
+#Defining priors used
+prior = c(prior(normal(0,0.5), class = 'Intercept'), prior(normal(0,0.5), class = 'b'), prior(normal(0,0.8), class = 'sigma'))
+#modelling
+m2_prior <-  brm(m2, family = gaussian, v1_asd, prior = prior, sample_prior = "only")
+#Checking priors
+pp_check(m0_prior, nsample = 100)
+### MAP MAP MAP MAP
+flist <-  alist(
+    ADOS ~ dnorm(mu , sigma),
+    mu <- a + b*NonVerbalIQ ,
+        a ~ dnorm( 0 , 0.5 ) ,
+        b ~ dnorm( 0 , 0.5 ) ,
+        sigma ~ dunif( 0 , 1 )
+  )
+m.m2 <- rethinking::map(flist, data = v1_asd)
+precis(m.m2)
+precis_plot(precis(m.m2))
+```
+
+```{r plots}
+### Plot of raw data
+ggplot(v1_asd, aes(NonVerbalIQ, ADOS)) +
+  geom_point()
+### Plot
+# extract 20 samples from the posterior
+post <- extract.samples( m.m2 , n=100 )
+# display raw data and sample size
+plot( ADOS ~ NonVerbalIQ , data=v1_asd )
+abline( a=coef(m.m2)["a"] , b=coef(m.m2)["b"], col=col.alpha("red", 1))
+for (i in 1:150)
+abline( a=post$a[i], b=post$b[i], col=col.alpha("blue",0.1))
+### new plot
+# define sequence of weights to compute predictions for
+# these values will be on the horizontal axis
+nverb.seq <- seq(from= -3, to= 3, by=0.1)
+# use link to compute mu
+# for each sample from posterior
+# and for each weight in weight.seq
+mu2 <- link( m.m2 , data=data.frame(NonVerbalIQ=nverb.seq) )
+str(mu2)
+###FUNKYPLOT 
+# use type="n" to hide raw data
+plot( ADOS ~ NonVerbalIQ , v1_asd , type="n" )
+# loop over samples and plot each mu value
+for ( i in 1:nrow(mu2) )
+points( nverb.seq , mu2[i,] , pch=16 , col=col.alpha(rangi2,0.1) )
+### GOODPPLOT NICEPLOT
+# summarize the distribution of mu
+mu2.mean <- apply(mu2 , 2 , mean )
+mu2.HPDI <- apply(mu2 , 2 , HPDI , prob=0.89 )
+# plot raw data
+# fading out points to make line and interval more visible
+plot( ADOS ~ NonVerbalIQ , data=v1_asd , col=col.alpha(rangi2,1) )
+# plot the MAP line, aka the mean mu for each weight
+lines( nverb.seq , mu2.mean )
+# plot a shaded region for 89% HPDI
+shade( mu2.HPDI , nverb.seq )
+```
+
+
+1.3. Social IQ and ADOS
+```{r sIQ + ados}   
+plot(v1_asd$ADOS ~ v1_asd$SocialIQ) 
+ 
+#  defining model first
+m3 <-  bf(ADOS ~ 1 + SocialIQ)
+dens (v1_asd$SocialIQ)
+dens (v1_asd$ADOS)
+#Getting the priors 
+get_prior(m3, v1_asd, family = gaussian)
+#Defining priors used
+prior = c(prior(normal(0,0.5), class = 'Intercept'), prior(normal(0,0.5), class = 'b'), prior(normal(0,0.8), class = 'sigma'))
+#modelling
+m3_prior <-  brm(m3, family = gaussian, v1_asd, prior = prior, sample_prior = "only")
+#Checking priors
+pp_check(m3_prior, nsample = 100)
+#MAP
+flist <-  alist(
+    ADOS ~ dnorm(mu , sigma),
+    mu <- a + b*SocialIQ ,
+        a ~ dnorm( 0 , 0.5 ) ,
+        b ~ dnorm( 0 , 0.5 ) ,
+        sigma ~ dunif( 0 , 1 )
+  )
+m.m3 <- rethinking::map(flist, data = v1_asd)
+precis(m.m3)
+precis_plot(precis(m.m3))
+```
+
+```{r plots}
+### Plot of raw data 
+ggplot(v1_asd, aes(SocialIQ, ADOS)) +
+  geom_point()
+### Plot
+# extract 20 samples from the posterior
+post <- extract.samples( m.m3 , n=100 )
+# display raw data and sample size
+plot( ADOS ~ SocialIQ , data=v1_asd )
+abline( a=coef(m.m3)["a"] , b=coef(m.m3)["b"], col=col.alpha("red", 1))
+for (i in 1:150)
+abline( a=post$a[i], b=post$b[i], col=col.alpha("blue",0.1))
+### new plot
+# define sequence of weights to compute predictions for
+# these values will be on the horizontal axis
+soc.seq <- seq(from= -2, to= 3, by=0.1)
+# use link to compute mu
+Show in New WindowClear OutputExpand/Collapse Output
+Modify Chunk OptionsRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current ChunkModify Chunk OptionsRun All Chunks AboveRun Current Chunk
+Show in New WindowClear OutputExpand/Collapse Output
+ Show Traceback
+Error in data.frame(SocialIQ = soc.seq) : object 'soc.seq' not found
+# for each sample from posterior
+# and for each weight in weight.seq
+mu3 <- link( m.m3, data=data.frame(SocialIQ=soc.seq) )
+str(m3)
+###FUNKYPLOT
+# use type="n" to hide raw data
+plot( ADOS~ SocialIQ , v1_asd , type="n" )
+# loop over samples and plot each mu value
+for ( i in 1:nrow(mu3) ) 
+points( soc.seq , mu3[i,] , pch=16 , col=col.alpha(rangi2,0.1) )
+### GOODPPLOT NICEPLOT
+# summarize the distribution of mu 
+mu3.mean <- apply(mu3 , 2 , mean )
+mu3.HPDI <- apply(mu3 , 2 , HPDI , prob=0.89 )
+# plot raw data
+# fading out points to make line and interval more visible
+plot( ADOS ~ SocialIQ , data=v1_asd , col=col.alpha(rangi2,1) )
+# plot the MAP line, aka the mean mu for each weight
+lines( soc.seq , mu3.mean )
+# plot a shaded region for 89% HPDI
+shade( mu3.HPDI , soc.seq )
+```
+
+
+```{r residual check}
+res_normal <- function(model, outcome, predictor) {
+   
+  mu <- coef(model)['a'] + 
+    coef(model)['b']*predictor 
+  
+  m.resid <- outcome - mu
+  dens(m.resid)
+}
+res_normal(m.m0, visit1$ADOS, visit1$VerbalIQ)
+res_normal(m.m2, visit1$ADOS, visit1$NonVerbalIQ)
+res_normal(m.m3, visit1$ADOS, visit1$SocialIQ)
+```
+
+
+### 2. Do the different aspects of IQ account for different portions of the variance in ADOS? 
+2.1. Does it make sense to have all IQ measures in the same model? First write a few lines answering the question and motivating your answer, including a discussion as to what happens when you put all of them in the same model. Then build a model following your answer. If your answer is "no", you are not free, you still have to answer: are there alternative ways of answering the question?
+- Answered in docs
+
+2.2. Build the model, assess its quality, write a few lines interpreting the results.
+```{r model w all measures } 
+#MAP
+flist <-  alist(
+    ADOS ~ dnorm(mu , sigma),
+    mu <- a + bs*SocialIQ + bv*VerbalIQ + bn*NonVerbalIQ,
+        a ~ dnorm( 0 , 0.5 ) ,
+        bs ~ dnorm( 0 , 0.5 ) ,
+        bv ~ dnorm( 0 , 0.5 ), 
+        bn ~ dnorm(0, 0.5 ),
+        sigma ~ dunif( 0 , 1 ) 
+  )
+m2.1 <- rethinking::map(flist, data = v1_asd)
+precis(m2.1)
+precis_plot(precis(m2.1))
+#Extract sample from the model
+post.samples=extract.samples(m2.1)
+plot(bs ~ bn, post.samples, col = col.alpha(rangi2,0.1), pch = 16)
+plot(bs ~ bv, post.samples, col = col.alpha(rangi2,0.1), pch = 16)
+plot(bn ~ bv, post.samples, col = col.alpha(rangi2,0.1), pch = 16)
+#plotting with the uncertainty
+#does our model if the model makes sense?
+plot(ADOS ~ SocialIQ + NonVerbalIQ + VerbalIQ, v1_asd)
+abline(a=coef(m2.1)['a'], b=coef(m2.1)['bs']+coef(m2.1)['bn']+coef(m2.1)['bv'])
+for ( i in 1:150 )
+abline( a=post.samples$a[i] , b=post.samples$bs[i]+post.samples$bn[i]+post.samples$bv[i] , col=col.alpha(rangi2, 0.2) )
+####5.11 i Rethinking
+#Link-function to compute mu for each sample from posterior and for each value in the sequence
+mu <- link(m2.1)
+#summarize the across cases
+mu.mean <- apply( mu , 2 , mean )
+mu.HPDI <- apply( mu , 2 , HPDI , prob=0.89 )
+#Plotting (5.12)
+plot( mu.mean ~ v1_asd$ADOS , col=rangi2 , ylim=range(mu.HPDI) ,
+xlab="Observed ADOS" , ylab="Predicted ADOS" )
+abline( a=0 , b=1 , lty=2 )
+for ( i in 1:nrow(v1_asd) )
+lines( rep(v1_asd$ADOS[i],2) , c(mu.HPDI[1,i],mu.HPDI[2,i]) ,
+col=rangi2 )
+#5.13
+#identify( x=V1_ASD$ADOS.s , y=mu.mean , labels=V1_ASD$ChildID , cex=0.8 )
+```
+
+```{r residual}
+res_normal(m2.1, v1_asd$ADOS, v1_asd$VerbalIQ)
+```
+
+
+### 3. Let's now include also the TD children. Does it make sense to ask whether IQ and ADOS are related? Motivate your answer. In any case, if you wanted to build a model to answer that question, which model would you build? Run the model, assess its quality, write a few lines interpreting the results.
+```{r all measures - asd+td} 
+#Standardize predictors to a mean of 0 and sd of 1  
+visit1 <- na.omit(visit1)
+visit1$ADOS.s <-  (visit1$ADOS - mean(visit1$ADOS))/ sd(visit1$ADOS)
+visit1$VerbalIQ.s <-  (visit1$VerbalIQ - mean(visit1$VerbalIQ, na.rm = T))/sd(visit1$VerbalIQ)
+visit1$NonVerbalIQ.s <-  (visit1$NonVerbalIQ - mean(visit1$NonVerbalIQ, na.rm = T))/sd(visit1$NonVerbalIQ)
+visit1$SocialIQ.s <-  (visit1$SocialIQ-mean(visit1$SocialIQ, na.rm = T))/sd(visit1$SocialIQ)
+#Model
+flist <-  alist(
+    ADOS.s ~ dnorm(mu , sigma),
+    mu <- a + bV*VerbalIQ.s + bN*NonVerbalIQ.s + bS*SocialIQ.s ,
+        a ~ dnorm( 0 , 0.5 ) ,
+        bV ~ dnorm( 0 , 0.5 ) ,
+        bN ~ dnorm( 0 , 0.5 ) ,
+        bS ~ dnorm( 0 , 0.5 ) ,
+        sigma ~ dunif( 0 , 0.8 )
+  )
+m3.1 <- rethinking::map(flist, data = visit1)
+precis(m3.1)
+precis_plot( precis(m3.1))
+ 
+####5.11 i Rethinking
+#Link-function to compute mu for each sample from posterior and for each value in the sequence
+mu <- link(m3.1)
+#summarize the across cases
+mu.mean <- apply( mu , 2 , mean )
+mu.HPDI <- apply( mu , 2 , HPDI , prob=0.89 )
+#Plotting (5.12)
+plot( mu.mean ~ visit1$ADOS.s , col= ('black') , ylim=range(mu.HPDI) ,
+xlab="Observed ADOS" , ylab="Predicted ADOS" )
+abline( a=0 , b=1 , lty=2 )
+for ( i in 1:nrow(visit1) )
+lines( rep(visit1$ADOS.s[i],2) , c(mu.HPDI[1,i],mu.HPDI[2,i]) ,
+col=rangi2 )
+#5.13
+#identify( x=visit1$ADOS.s , y=mu.mean , labels=visit1$ChildID , cex=0.8 )
+```
+
+```{r interaction?}
+#trying out interaction effect model. Doesn't work. abandon mission
+flist <- 
+  alist(
+    ADOS ~ dnorm(mu, sigma),
+    mu <- intercept + gamma1*NonVerbalIQ.s + bgroup*ASD + gamma2*VerbalIQ.s + bgroup*ASD + gamma3*SocialIQ.s + bgroup*ASD,
+   
+    gamma1 <- bnon +  binteraction1*ASD,  #nonverbal
+    gamma2 <- bverb + binteraction2*ASD,  #verbal
+    gamma3 <- bsoc +  binteraction3*ASD,  #social
+    
+    intercept ~ dnorm(0, 0.5),
+    
+    bnon ~ dnorm(0, 0.5),
+    bverb ~ dnorm(0, 0.5),
+    bsoc ~ dnorm(0, 0.5),
+    bgroup ~ dnorm(0,1),
+    
+    binteraction1 ~ dnorm(0,1),
+    binteraction2 ~ dnorm(0,1),
+    binteraction3 ~ dnorm(0,1),
+    
+    sigma ~ dnorm(0,0.8)
+    )
+    
+m3.2 <- rethinking:: map(flist, data = visit1)
+```
+
+```{r residual}
+res_normal(m3.1, v1_asd$ADOS, v1_asd$VerbalIQ)
+```
+
+```{r interaction?? plot}
+visit1$ASD <- as.factor(visit1$ASD)
+#checking with plots 
+pacman::p_load(ggunchained)
+p1 <- ggplot(visit1, aes(NonVerbalIQ, ADOS, color = ASD)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(title = "ADOS score by non-verbal IQ for ASD and TD") 
+p2 <- ggplot(visit1, aes(VerbalIQ, ADOS, color = ASD)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(title = "ADOS score by verbal IQ for ASD and TD") 
+p3 <- ggplot(visit1, aes(SocialIQ, ADOS, color = ASD)) +
+  geom_point() +
+  geom_smooth(method = "lm") +
+  labs(title = "ADOS score by social IQ for ASD and TD")
+p1
+p2
+p3
+```
+
+
+
+### 4. Let's discuss contents:
+4.1. You have three scores for IQ, do they show shared variance? Is that the same in TD and ASD? What does that tell us about IQ?
+
+```{r + Correlation + ASD only, TD only}
+#filtering
+V1_TD <- visit1 %>% filter(ASD == 0)
+V1_TD <- (na.omit(V1_TD))
+#standardising
+V1_TD$ADOS.s = (V1_TD$ADOS - mean(V1_TD$ADOS))/ sd(V1_TD$ADOS)
+V1_TD$VerbalIQ.s = (V1_TD$VerbalIQ - mean(V1_TD$VerbalIQ, na.rm = T))/sd(V1_TD$VerbalIQ)
+V1_TD$NonVerbalIQ.s = (V1_TD$NonVerbalIQ - mean(V1_TD$NonVerbalIQ, na.rm = T))/sd(V1_TD$NonVerbalIQ)
+V1_TD$SocialIQ.s = (V1_TD$SocialIQ-mean(V1_TD$SocialIQ, na.rm = T))/sd(V1_TD$SocialIQ)
+#correlation
+cor(select(v1_asd, VerbalIQ, NonVerbalIQ, SocialIQ))
+cor(select(V1_TD, VerbalIQ, NonVerbalIQ, SocialIQ))
+```
+
+```{r + Residual ASD plots}
+#Map 
+flist <-  alist( 
+    ADOS ~ dnorm(mu , sigma),
+    mu <- a + bV*VerbalIQ + bN*NonVerbalIQ + bS*SocialIQ ,
+        a ~ dnorm( 0 , 0.5 ) ,
+        bV ~ dnorm( 0 , 0.5 ) ,
+        bN ~ dnorm( 0 , 0.5 ) ,
+        bS ~ dnorm( 0 , 0.5 ) ,
+        sigma ~ dunif( 0 , 0.8 )
+  )
+m1.4 <- rethinking::map(flist, data = v1_asd)
+precis(m1.4)
+precis_plot( precis(m1.4))
+#Model for residuals of verbalIQ 'controlling' for NonVerbalIQ and SocialIQ
+modelVIQ <- rethinking::map(
+  alist(
+    VerbalIQ ~ dnorm(mu, sigma),
+    mu <- a + b1*NonVerbalIQ + b2*SocialIQ,
+    a ~ dnorm(0,0.5),
+    b1 ~ dnorm(0, 0.5),
+    b2 ~ dnorm(0, 0.5),
+    sigma ~ dunif(0, 0.8)
+  ),
+  data = v1_asd)
+#creating model for residuals of non-verbalIQ 'controlling' for VIQ and SIQ
+modelNonVIQ <- rethinking::map(
+  alist(
+    NonVerbalIQ ~ dnorm(mu, sigma),
+    mu <- a + b1*VerbalIQ + b2*SocialIQ,
+    a ~ dnorm(0,0.5),
+    b1 ~ dnorm(0, 0.5),
+    b2 ~ dnorm(0, 0.5),
+    sigma ~ dunif(0, 0.8)
+  ),
+  data = v1_asd)
+#creating model for residuals of social IQ 'controlling' for NVIQ and VIQ
+modelSocIQ <- rethinking::map(
+  alist(
+    SocialIQ ~ dnorm(mu, sigma),
+    mu <- a + b1*NonVerbalIQ + b2*VerbalIQ,
+    a ~ dnorm(0, 0.5),
+    b1 ~ dnorm(0, 0.5),
+    b2 ~ dnorm(0, 0.5),
+    sigma ~ dunif(0, 0.8)
+  ),
+  data = v1_asd)
+#Residuals
+#VERBAL
+mu.v <- coef(modelVIQ)['a'] + coef(modelVIQ)['b1']*v1_asd$NonVerbalIQ + coef(modelVIQ)['b2']*v1_asd$SocialIQ
+#compute residual for each value
+resid_verbal <- v1_asd$VerbalIQ - mu.v
+  
+#SOCIAL
+mu.s <- coef(modelSocIQ)['a'] + coef(modelSocIQ)['b1']*v1_asd$NonVerbalIQ + coef(modelSocIQ)['b2']*v1_asd$VerbalIQ
+#compute residual for each value
+resid_social <- v1_asd$SocialIQ - mu.s
+  
+#NONVERBAL
+mu.n <- coef(modelNonVIQ)['a'] + coef(modelNonVIQ)['b1']*v1_asd$VerbalIQ + coef(modelNonVIQ)['b2']*v1_asd$SocialIQ
+#compute residual for each value
+resid_nonverbal <- v1_asd$NonVerbalIQ - mu.n
+  
+  
+  
+#Dataframes
+VerbalIQ_df = data.frame(resid_verbal, v1_asd$ADOS)
+NonVerbalIQ_df = data.frame(resid_nonverbal, v1_asd$ADOS)
+SocialIQ_df = data.frame(resid_social, v1_asd$ADOS)
+#### PLOTS PLOTS PLOTS
+resplot_verbal = ggplot(VerbalIQ_df, aes(resid_verbal, v1_asd$ADOS)) +
+  geom_point(aes(colour = palette(rainbow(34)))) +
+  geom_smooth(method='lm', col = 'black') +
+  geom_vline(xintercept=0, linetype = 'dotted') + theme_grey() + theme(legend.position = 'none')+
+  xlab('Residuals for Verbal "controlling" for social and nonverbal')+
+  ylab('Ados (Standardized)')
+resplot_verbal
+resplot_Nonverbal = ggplot(NonVerbalIQ_df, aes(resid_nonverbal, v1_asd$ADOS)) +
+  geom_point(aes(colour = palette(rainbow(34)))) +
+  geom_smooth(method='lm', col = 'black') +
+  geom_vline(xintercept=0, linetype = 'dotted') + theme_grey() + theme(legend.position = 'none') + 
+  xlab('Residuals for Nonverbal IQ "controlling" for social and verbal')+
+  ylab('Ados (Standardized)')
+resplot_social = ggplot(SocialIQ_df, aes(resid_social, v1_asd$ADOS)) +
+  geom_point(aes(colour = palette(rainbow(34)))) +
+  geom_smooth(method='lm', col = 'black') +
+  geom_vline(xintercept=0, linetype = 'dotted') + theme_grey() + theme(legend.position = 'none') + 
+  xlab('Residuals for Social IQ "controlling" for verbal and nonverbal')+
+  ylab('Ados (Standardized)')
+resplot_verbal
+resplot_Nonverbal
+resplot_social
+```
+
+```{r + Residual plots only TD}
+#Model for residuals of verbalIQ 'controlling' for NonVerbalIQ and SocialIQ
+modelVIQ <- rethinking::map(
+  alist(
+    VerbalIQ.s ~ dnorm(mu, sigma),
+    mu <- a + b1*NonVerbalIQ.s + b2*SocialIQ.s,
+    a ~ dnorm(0,0.5),
+    b1 ~ dnorm(0, 0.5),
+    b2 ~ dnorm(0, 0.5),
+    sigma ~ dunif(0, 0.8)
+  ),
+  data = V1_TD)
+#creating model for residuals of non-verbalIQ 'controlling' for VIQ and SIQ
+modelNonVIQ <- rethinking::map(
+  alist(
+    NonVerbalIQ.s ~ dnorm(mu, sigma),
+    mu <- a + b1*VerbalIQ.s + b2*SocialIQ.s,
+    a ~ dnorm(0,0.5),
+    b1 ~ dnorm(0, 0.5),
+    b2 ~ dnorm(0, 0.5),
+    sigma ~ dunif(0, 0.8)
+  ),
+  data = V1_TD)
+#creating model for residuals of social IQ 'controlling' for NVIQ and VIQ
+modelSocIQ <- rethinking::map(
+  alist(
+    SocialIQ.s ~ dnorm(mu, sigma),
+    mu <- a + b1*NonVerbalIQ.s + b2*VerbalIQ.s,
+    a ~ dnorm(0,0.5),
+    b1 ~ dnorm(0, 0.5),
+    b2 ~ dnorm(0, 0.5),
+    sigma ~ dunif(0, 0.8)
+  ),
+  data = V1_TD)
+#Residuals
+#VERBAL
+mu.v <- coef(modelVIQ)['a'] + coef(modelVIQ)['b1']*V1_TD$NonVerbalIQ.s + coef(modelVIQ)['b2']*V1_TD$SocialIQ.s
+#compute residual for each value
+resid_verbal <- V1_TD$VerbalIQ.s - mu.v
+  
+#SOCIAL
+mu.s <- coef(modelSocIQ)['a'] + coef(modelSocIQ)['b1']*V1_TD$NonVerbalIQ.s + coef(modelSocIQ)['b2']*V1_TD$VerbalIQ.s
+#compute residual for each value
+resid_social <- V1_TD$SocialIQ.s - mu.s
+  
+#NONVERBAL
+mu.n <- coef(modelNonVIQ)['a'] + coef(modelNonVIQ)['b1']*V1_TSD$VerbalIQ.s + coef(modelNonVIQ)['b2']*V1_TD$SocialIQ.s
+#compute residual for each value
+resid_nonverbal <- V1_TD$NonVerbalIQ.s - mu.n
+  
+  
+  
+#Dataframes
+VerbalIQ_df = data.frame(resid_verbal, V1_TD$ADOS.s)
+NonVerbalIQ_df = data.frame(resid_nonverbal, V1_TD$ADOS.s)
+SocialIQ_df = data.frame(resid_social, V1_TD$ADOS.s)
+resplot_verbal = ggplot(VerbalIQ_df, aes(resid_verbal, V1_TD.ADOS.s)) +
+  geom_point(aes(colour = palette(rainbow(36)))) +
+  geom_smooth(method='lm', col = 'black') +
+  geom_vline(xintercept=0, linetype = 'dotted') + theme_grey() + theme(legend.position = 'none') + 
+  xlab('Residuals for Verbal "controlling" for social and nonverbal')+
+  ylab('Ados (Standardized)')
+  
+resplot_Nonverbal = ggplot(NonVerbalIQ_df, aes(resid_nonverbal, V1_TD.ADOS.s)) +
+  geom_point(aes(colour = palette(rainbow(36)))) +
+  geom_smooth(method='lm', col = 'black') +
+  geom_vline(xintercept=0, linetype = 'dotted', col = 'black')+ theme_grey() + theme(legend.position = 'none') + 
+xlab('Residuals for Nonverbal IQ "controlling" for social and verbal')+
+  ylab('Ados (Standardized)')
+resplot_social = ggplot(SocialIQ_df, aes(resid_social, V1_TD.ADOS.s)) +
+  geom_point(aes(colour = palette(rainbow(36)))) +
+  geom_smooth(method='lm', col = 'black') +
+  geom_vline(xintercept=0, linetype = 'dotted')+ theme_grey() + theme(legend.position = 'none') + 
+  xlab('Residuals for Social IQ "controlling" for verbal and nonverbal')+
+  ylab('Ados (Standardized)')
+resplot_verbal
+resplot_Nonverbal
+resplot_social
+```
+
+ASD children: 
+Social IQ & Verbal IQ are the strongest predictors of ADOS scores
+(redsidual plot)
+
+Verbal IQ correlated with both Non-Verbal & Social IQ (more than 0.6)
+Social & Non-Verbal IQ are not very correlated. 
+
+TD children: 
+Non-Verbal and Verbal IQ are highly correlated (0.55)
+Social IQ is not really corrleated with any of them. 
+Opposite effect on between social and nonverbal
+
+
+4.2. You have explored the relation between IQ and ADOS. How do you explain that relation from a cognitive perspective? N.B. You can present alternative hypotheses.
